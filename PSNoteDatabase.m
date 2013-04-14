@@ -30,6 +30,7 @@
    if (self) {
       notes = calloc(NUM_NOTES, sizeof(double *));
       finished = NO;
+      filled = NO;
    }
    return self;
 }
@@ -37,11 +38,14 @@
 //  Takes notes
 - (id) initFromDirectory:(NSString *)dirName
 {
-   self = [super init];
+   self = [self init]; //  for calloc of notes
    if (self) {
       NSArray * directory = [[NSFileManager defaultManager] contentsOfDirectoryAtPath:dirName error:NULL];
-      if (directory.count == 0)
+      if (directory.count == 0) {
          NSLog(@"Empty directory? %@", dirName);
+         return nil;
+      }
+      int notesInitialized = 0;
       for (int i = 0; i < directory.count; i++) {
          NSString * contents = [NSString stringWithContentsOfFile:[directory objectAtIndex:i] encoding:NSASCIIStringEncoding error:NULL];
          NSArray * lines = [contents componentsSeparatedByString:@"\n"];
@@ -57,15 +61,18 @@
          double * wave = calloc(WINDOW_SIZE, sizeof(double));
          for (int i = 1; i < lines.count; i++) {
             int value = ((NSString *) [lines objectAtIndex:i]).intValue;
-            wave[i-1] = value;
+            wave[i-1] = value / 32768.0;
          }
-         if (notes[index] == NULL)
+         if (notes[index] == NULL) {
             notes[index] = wave;
+            notesInitialized++;
+         }
          else {
             NSLog(@"Duplicate note of index: %d", index);
          }
       }
-      
+      if (notesInitialized == NUM_NOTES)
+         filled = YES;
    }
    return self;
 }
@@ -78,6 +85,35 @@
 //  fills in the rest of the database
 - (void) extrapolate
 {
+}
+
+- (void) normalize
+{
+}
+
+- (void) saveDataAtDirectory:(NSString *)path
+{
+   NSFileManager * fm = [NSFileManager defaultManager];
+   BOOL isDirectory;
+   NSAssert(![fm fileExistsAtPath:path isDirectory:&isDirectory],
+            @"File %@ already exists? is directory: %d", path, isDirectory);
+   [fm createDirectoryAtPath:path withIntermediateDirectories:YES attributes:nil error:nil];
+   for (int i = 0; i < NUM_NOTES; i++) {
+      NSString * wavePath = [path stringByAppendingPathComponent:[NSString stringWithFormat:@"%d", i]];
+      NSFileHandle * waveFile = [NSFileHandle fileHandleForWritingAtPath:wavePath];
+      for (int j = 0; j < WINDOW_SIZE; j++) {
+         NSData * data = [[NSString stringWithFormat:@"%d\n", (SInt16) notes[i][j] * 32768]
+                          dataUsingEncoding:NSASCIIStringEncoding];
+         [waveFile writeData:data];
+      }
+      if (i < 10) {
+         NSLog(@"First few bytes of file %d:", i);
+         NSLog(@"%@", [[NSString stringWithContentsOfFile:wavePath
+                                                 encoding:NSASCIIStringEncoding
+                                                    error:nil]
+                       substringToIndex:20]);
+      }
+   }
 }
 
 /* ---------------------------------------------------------------- */
@@ -190,21 +226,23 @@
 //  Returns array with indices of best guessed notes
 - (NSArray *) bestHypothesisForSignal:(double *)signal ofLength:(unsigned)len
 {
+   if (len != WINDOW_SIZE) {
+      NSLog(@"Wrong length. Is %u, should be %d", len, WINDOW_SIZE);
+      return NULL;
+   }
    double ** alignedNotes = [self alignDatabaseToSignal:signal ofLength:len];
    
    //  Make D, D^T, s
    int rows = NUM_NOTES;
    int columns = WINDOW_SIZE;
    double * D = calloc(rows * columns, sizeof(double));
-   for (int i = 0; i < rows; i++)
-      
+   for (int i = 0; i < rows; i++) {
+      for (int j = 0; j < columns; j++)
+         D[i*columns + j] = alignedNotes[i][j];
+   }
    
    double * DT = calloc(rows * columns, sizeof(double));
    vDSP_mtransD(D, 1, DT, 1, columns, rows);
-   double * sig = calloc(signal.count, sizeof(double));
-   int i = 0;
-   for (NSNumber * value in signal)
-      sig[i++] = value.doubleValue;
    
    double * temp = calloc(rows * rows, sizeof(double));
    vDSP_mmulD(D, 1, DT, 1, temp, 1, rows, rows, columns);
@@ -214,9 +252,11 @@
    vDSP_mmulD(inv, 1, D, 1, transform, 1, rows, columns, rows);
    
    double * alpha = calloc(rows, sizeof(double));
-   vDSP_mmulD(transform, 1, sig, 1, alpha, 1, rows, 1, columns);
+   vDSP_mmulD(transform, 1, signal, 1, alpha, 1, rows, 1, columns);
    
-   return nil;
+   NSMutableArray * bestNotes = [NSMutableArray arrayWithCapacity:10];
+   
+   return bestNotes;
 }
 
 
